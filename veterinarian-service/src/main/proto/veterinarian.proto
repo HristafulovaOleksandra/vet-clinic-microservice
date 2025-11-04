@@ -1,0 +1,44 @@
+syntax = "proto3";
+
+option java_multiple_files = true;
+option java_package = "org.vetclinic.grpc";
+option java_outer_classname = "VeterinarianProto";
+
+package veterinarian;
+
+service VeterinarianService {
+  rpc GetVeterinarian (VeterinarianRequest) returns (VeterinarianResponse);
+  rpc CheckAvailability (AvailabilityRequest) returns (AvailabilityResponse);
+  rpc ListVeterinarians (Empty) returns (VeterinarianListResponse);
+}
+
+message Empty {}
+
+message VeterinarianRequest {
+  int64 id = 1;
+}
+
+message VeterinarianResponse {
+  int64 id = 1;
+  string firstName = 2;
+  string lastName = 3;
+  string specialization = 4;
+  string email = 5;
+  string phone = 6;
+  bool available = 7;
+}
+
+message AvailabilityRequest {
+  int64 veterinarianId = 1;
+  string date = 2;
+  string time = 3;
+}
+
+message AvailabilityResponse {
+  bool available = 1;
+  string message = 2;
+}
+
+message VeterinarianListResponse {
+  repeated VeterinarianResponse veterinarians = 1;
+}
