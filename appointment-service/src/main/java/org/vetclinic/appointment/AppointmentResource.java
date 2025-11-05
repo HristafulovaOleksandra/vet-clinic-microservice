@@ -5,10 +5,12 @@ import jakarta.ws.rs.core.MediaType;
 import jakarta.ws.rs.core.Response;
 import org.eclipse.microprofile.rest.client.inject.RestClient;
 import org.vetclinic.appointment.client.PetRestClient;
+import org.vetclinic.appointment.client.PetDTO;
 import org.vetclinic.grpc.*;
 import io.quarkus.grpc.GrpcClient;
 
 import java.util.List;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
 
 @Path("/api/appointments")
@@ -17,10 +19,10 @@ import java.util.concurrent.CompletionStage;
 public class AppointmentResource {
 
     private final AppointmentRepository appointmentRepository;
-    
+
     @RestClient
     PetRestClient petRestClient;
-    
+
     @GrpcClient("veterinarian-service")
     VeterinarianService veterinarianGrpcClient;
 
@@ -44,44 +46,68 @@ public class AppointmentResource {
     }
 
     @POST
-    public CompletionStage<Response> createAppointment(Appointment appointment) {
-        // Перевірка існування тварини через REST
+    public Response createAppointment(Appointment appointment) {
+        System.out.println("=== Creating appointment ===");
+        System.out.println("Pet ID: " + appointment.getPetId());
+        System.out.println("Veterinarian ID: " + appointment.getVeterinarianId());
+
+
         try {
-            var pet = petRestClient.getPetById(appointment.getPetId());
+            System.out.println("Calling Pet Service...");
+            PetDTO pet = petRestClient.getPetById(appointment.getPetId());
+            System.out.println("Pet received: " + pet);
+
             if (pet == null) {
-                return CompletionStage.completedFuture(
-                    Response.status(Response.Status.BAD_REQUEST)
+                return Response.status(Response.Status.BAD_REQUEST)
                         .entity("Pet not found")
-                        .build()
-                );
+                        .build();
             }
+
+            System.out.println("Pet found: " + pet.getName());
+
         } catch (Exception e) {
-            return CompletionStage.completedFuture(
-                Response.status(Response.Status.BAD_REQUEST)
-                    .entity("Error checking pet: " + e.getMessage())
-                    .build()
-            );
+            System.err.println("Error calling Pet Service: " + e.getMessage());
+            e.printStackTrace();
+            return Response.status(Response.Status.BAD_REQUEST)
+                    .entity("Error checking pet: " + e.getClass().getName() + " - " + e.getMessage())
+                    .build();
         }
 
-        // Перевірка доступності ветеринара через gRPC
-        AvailabilityRequest availRequest = AvailabilityRequest.newBuilder()
-            .setVeterinarianId(appointment.getVeterinarianId())
-            .setDate(appointment.getAppointmentDate().toString())
-            .setTime(appointment.getAppointmentTime())
-            .build();
 
-        return veterinarianGrpcClient.checkAvailability(availRequest)
-            .onItem().transform(availResponse -> {
-                if (!availResponse.getAvailable()) {
-                    return Response.status(Response.Status.CONFLICT)
+        try {
+            System.out.println("Calling Veterinarian Service via gRPC...");
+            AvailabilityRequest availRequest = AvailabilityRequest.newBuilder()
+                    .setVeterinarianId(appointment.getVeterinarianId())
+                    .setDate(appointment.getAppointmentDate().toString())
+                    .setTime(appointment.getAppointmentTime())
+                    .build();
+
+            AvailabilityResponse availResponse = veterinarianGrpcClient
+                    .checkAvailability(availRequest)
+                    .await().indefinitely();
+
+            System.out.println("Veterinarian availability: " + availResponse.getAvailable());
+            System.out.println("Message: " + availResponse.getMessage());
+
+            if (!availResponse.getAvailable()) {
+                return Response.status(Response.Status.CONFLICT)
                         .entity("Veterinarian not available: " + availResponse.getMessage())
                         .build();
-                }
-                
-                Appointment created = appointmentRepository.save(appointment);
-                return Response.status(Response.Status.CREATED).entity(created).build();
-            })
-            .subscribeAsCompletionStage();
+            }
+
+        } catch (Exception e) {
+            System.err.println("Error calling Veterinarian Service: " + e.getMessage());
+            e.printStackTrace();
+            return Response.status(Response.Status.BAD_REQUEST)
+                    .entity("Error checking veterinarian: " + e.getMessage())
+                    .build();
+        }
+
+
+        Appointment created = appointmentRepository.save(appointment);
+        System.out.println("Appointment created with ID: " + created.getId());
+
+        return Response.status(Response.Status.CREATED).entity(created).build();
     }
 
     @GET
@@ -89,37 +115,37 @@ public class AppointmentResource {
     public CompletionStage<Response> getAppointmentDetails(@PathParam("id") Long id) {
         Appointment appointment = appointmentRepository.findById(id);
         if (appointment == null) {
-            return CompletionStage.completedFuture(
-                Response.status(Response.Status.NOT_FOUND).build()
+            return CompletableFuture.completedFuture(
+                    Response.status(Response.Status.NOT_FOUND).build()
             );
         }
 
-        // Отримання інформації про ветеринара через gRPC
+
         VeterinarianRequest vetRequest = VeterinarianRequest.newBuilder()
-            .setId(appointment.getVeterinarianId())
-            .build();
+                .setId(appointment.getVeterinarianId())
+                .build();
 
         return veterinarianGrpcClient.getVeterinarian(vetRequest)
-            .onItem().transform(vetResponse -> {
-                AppointmentDetailsDTO details = new AppointmentDetailsDTO();
-                details.setAppointment(appointment);
-                details.setVeterinarianName(vetResponse.getFirstName() + " " + vetResponse.getLastName());
-                details.setVeterinarianSpecialization(vetResponse.getSpecialization());
-                
-                // Отримання інформації про тварину через REST
-                try {
-                    var pet = petRestClient.getPetById(appointment.getPetId());
-                    if (pet != null) {
-                        details.setPetName(pet.getName());
-                        details.setPetSpecies(pet.getSpecies());
+                .onItem().transform(vetResponse -> {
+                    AppointmentDetailsDTO details = new AppointmentDetailsDTO();
+                    details.setAppointment(appointment);
+                    details.setVeterinarianName(vetResponse.getFirstName() + " " + vetResponse.getLastName());
+                    details.setVeterinarianSpecialization(vetResponse.getSpecialization());
+
+
+                    try {
+                        var pet = petRestClient.getPetById(appointment.getPetId());
+                        if (pet != null) {
+                            details.setPetName(pet.getName());
+                            details.setPetSpecies(pet.getSpecies());
+                        }
+                    } catch (Exception e) {
+                        System.err.println("Error fetching pet details: " + e.getMessage());
                     }
-                } catch (Exception e) {
-                    // Log error
-                }
-                
-                return Response.ok(details).build();
-            })
-            .subscribeAsCompletionStage();
+
+                    return Response.ok(details).build();
+                })
+                .subscribeAsCompletionStage();
     }
 
     @PUT
